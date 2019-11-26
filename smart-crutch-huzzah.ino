@@ -4,6 +4,7 @@
 #include "FS.h"
 
 #define SENSOR_SAMPLE_INTERVAL 10000 // Interval between individual IMU/Weight samples in microseconds
+#define SENSOR_SAMPLE_SIZE 20 // Number of sensor samples in each period
 #define DAILY_SAMPLES 5 // Number of gait samples per day
 
 #define MPU9250_ADDRESS 0x68
@@ -99,13 +100,14 @@ bool connectToInsecureHost(WiFiClient *client, const char* host, const int port)
   return true;
 }
 
-void sendData(String line) {
+bool sendData(String line) {
   WiFiClientSecure client;
   client.setInsecure();
   Serial.print("Connecting to ");
   Serial.println(host);
   if (!connectToSecureHost(&client, host, httpsPort)) {
-    return;
+    Serial.println("Failed to connect to script host");
+    return false;
   }
 
   String url = String("/macros/s/" + SCRIPT_ID + "/exec?data=" + line);
@@ -118,7 +120,12 @@ void sendData(String line) {
          "User-Agent: BuildFailureDetectorESP8266\r\n" +
          "Connection: close\r\n\r\n");
 
-  Serial.println("request sent");
+  if (!client.find("HTTP/1.1")) // skip HTTP/1.1
+    return false;
+  int st = client.parseInt(); // parse status code
+  if (st == 200)
+    return true;
+  return false;
 }
 
 // This function read Nbytes bytes from I2C device at address Address. 
@@ -145,7 +152,7 @@ void I2CwriteByte(uint8_t Address, uint8_t Register, uint8_t Data) {
   Wire.endTransmission();
 }
 
-String uploadCurrentTimestamp() {
+String getCurrentTimestamp() {
   WiFiClient client;
   String response = "";
   Serial.print("Connecting to worldclockapi.com");
@@ -191,9 +198,12 @@ void setup() {
   startTime = micros();
 }
 
-void uploadDatetimeMicros() {
+bool uploadDatetimeMillis() {
   Serial.println("Uploading new datetime");
-  sendData(uploadCurrentTimestamp() + ",micros=" + micros());
+  if(sendData(getCurrentTimestamp() + ",Arduino_milliseconds=" + millis()))
+    Serial.println("Datetime upload successful");
+    return true;
+  return false;
 }
 
 bool crutchInUse() {
@@ -203,9 +213,9 @@ bool crutchInUse() {
 
 bool collectGaitSample() {
   File appendLog = SPIFFS.open("/log.csv", "a");
+  appendLog.print("Start_of_sample|");
 
-  // Todo increase to 200 samples
-  for(int n = 0; n <= 20; n++) {
+  for(int n = 0; n <= SENSOR_SAMPLE_SIZE; n++) {
     newTime = micros();
     while((newTime - oldTime) < SENSOR_SAMPLE_INTERVAL){
       newTime = micros();
@@ -226,7 +236,8 @@ bool collectGaitSample() {
     int16_t gy=-(Buf[10]<<8 | Buf[11]);
     int16_t gz=Buf[12]<<8 | Buf[13];
 
-    File appendLog = SPIFFS.open("/log.csv", "a");
+    appendLog.print(millis());
+    appendLog.print(',');
     appendLog.print(micros());
     appendLog.print(',');
     appendLog.print(ax);
@@ -242,6 +253,7 @@ bool collectGaitSample() {
     appendLog.print(gz);
     appendLog.print('|');
   }
+  appendLog.print("End_of_sample|");
   appendLog.close();
 }
 
@@ -255,25 +267,30 @@ void clearData() {
   writeLog.close();
 }
 
-void uploadNewData() {
+bool uploadNewData() {
   Serial.println("Uploading new data");
+  if (!sendData("New_upload"))
+    return false;
+  if (!uploadDatetimeMillis())
+    return false;
   File readLog = SPIFFS.open("/log.csv", "r");
   String line = readLog.readStringUntil('|');
   while(line.length() > 0) {
     Serial.println(line);
-    sendData(line);
+    if (!sendData(line))
+      return false;
     line = readLog.readStringUntil('|');
   }
+  if (!sendData("Upload end"))
+    return false;
   readLog.close();
-  bool success = true; //Todo confirm data uploaded before deleting
-  if(success) {
-    clearData();
-  }
+  clearData();
+  return true;
 }
 
 int samples_today = 0;
 bool uploaded_time_stamp = false;
-bool new_data = true;
+bool uploaded_new_data = false;
 
 void loop() {
   if (crutchInUse() && samples_today < DAILY_SAMPLES) {
@@ -281,20 +298,13 @@ void loop() {
     samples_today++;
     Serial.print("Sample collected, samples today = ");
     Serial.println(samples_today);
-    new_data = true;
+    uploaded_new_data = false;
   }
 
-  if (wifiConnected) {
-    
-    if (new_data) {
-      uploadNewData();
-    }
-
-    if (!uploaded_time_stamp) {
-      uploadDatetimeMicros();
-      uploaded_time_stamp = true; // Todo check if upload successful
-    }
-    new_data = false;
+  if (wifiConnected) {  
+    if (!uploaded_new_data) {
+        uploaded_new_data = uploadNewData();
+      }
   }
 
 }
