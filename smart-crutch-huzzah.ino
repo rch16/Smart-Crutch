@@ -48,8 +48,6 @@ void connectToWifi() {
     Serial.println(WiFi.SSID(n));
   }
 
-  bool connected = false;
-
   for(int n = 0; n < numberOfAccessPoints; n++) {
     for(int m = 0; m < NUM_NETWORKS; m++) {
       if (SSIDS[m] == WiFi.SSID(n)) {
@@ -65,10 +63,6 @@ void connectToWifi() {
         Serial.println("WiFi connected");
       }
     }
-  }
-  if(!connected) {
-    Serial.println("WiFi not connected");
-    connectToWifi();
   }
 }
 
@@ -258,7 +252,12 @@ bool collectGaitSample() {
 }
 
 bool wifiConnected() {
-  //Todo check if wifi connected
+  WiFiClient client;
+  String response = "";
+  Serial.print("Connecting to google.com");
+  if (!connectToInsecureHost(&client, "google.com", 80)) {
+    return false;
+  }
   return true;
 }
 
@@ -293,18 +292,21 @@ bool uploaded_time_stamp = false;
 bool uploaded_new_data = false;
 
 void loop() {
-  if (crutchInUse() && samples_today < DAILY_SAMPLES) {
+  if (crutchInUse() && samples_today < DAILY_SAMPLES) { // If weight is being applied to the crutch and we haven't collected more than DAILY_SAMPLES
     collectGaitSample();
     samples_today++;
     Serial.print("Sample collected, samples today = ");
     Serial.println(samples_today);
     uploaded_new_data = false;
   }
-
-  if (wifiConnected) {  
-    if (!uploaded_new_data) {
-        uploaded_new_data = uploadNewData();
-      }
+  
+  if (!uploaded_new_data) { // If new data exists but hasn't been uploaded yet
+    if (!wifiConnected()) { // Check if wifi connection exists by connecting to google
+      connectToWifi(); 
+    }
+    if (wifiConnected()) {  
+      uploaded_new_data = uploadNewData();
+    }
   }
 
 }
