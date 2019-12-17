@@ -1,7 +1,10 @@
 #include <ESP8266WiFi.h>
 #include <Wire.h>
 #include <WiFiClientSecure.h>
+#include <SoftwareSerial.h>
+
 #include "FS.h"
+#include "HX711.h"
 
 #define SENSOR_SAMPLE_INTERVAL 10000 // Interval between individual IMU/Weight samples in microseconds
 #define SENSOR_SAMPLE_SIZE 20 // Number of sensor samples in each period
@@ -20,20 +23,33 @@
 #define ACC_FULL_SCALE_8_G 0x10
 #define ACC_FULL_SCALE_16_G 0x18
 
+#define LOAD_DOUT_PIN 15
+#define LOAD_CLK_PIN 6
+
+// initialise hx711
+HX711 scale(LOAD_DOUT_PIN, LOAD_CLK_PIN);
+
 const char* host = "script.google.com";
 const int httpsPort = 443; 
 String SCRIPT_ID = "AKfycbyt1zJXaOvHo2_cz7Mfp6ivhan6XcGtnQO_UQzGzq6ECh3G4Zgj";
-const String SSIDS[2] = {"Fellas WiFi", "Closed Network"};
-const String PASSWORDS[2] = {"Silverton4ever", "portugal1"};
-const int NUM_NETWORKS = 2;
+const int NUM_NETWORKS = 4;
+const String SSIDS[NUM_NETWORKS] = {"Fellas WiFi", "Closed Network", "BTHub6-3G9R", "BHIPX"};
+const String PASSWORDS[NUM_NETWORKS] = {"Silverton4ever", "portugal1", "6Dtw3dLDwdRW", "123456789"};
  
-const char* ssid     = "Fellas WiFi";
-const char* password = "Silverton4ever";
+const char* ssid     = "BHIPX"; //"Fellas WiFi";
+const char* password = "123456789"; //"Silverton4ever";
 
 // Initial time
 long oldTime;
 long newTime;
 long startTime;
+
+// Loadcell reading
+long zeroFactor; // baseline
+float pressure;
+float calibrationFactor = -8000;
+
+bool connected;
 
 void connectToWifi() {
   WiFi.scanNetworks(false, false);
@@ -165,6 +181,9 @@ String getCurrentTimestamp() {
  
 void setup() {
   Serial.begin(115200);
+  delay(500);
+  Serial.println("Starting...");
+  
   connectToWifi();
   Wire.begin();
   SPIFFS.begin();
@@ -184,6 +203,16 @@ void setup() {
   
   // Request continuous magnetometer measurements in 16 bits
   I2CwriteByte(MAG_ADDRESS,0x0A,0x16);
+
+  // Configure load cell
+  scale.set_scale();
+  scale.tare();
+
+  // Get a baseline reading
+  zeroFactor = scale.read_average();
+
+  // Adjust to calibration factor
+  scale.set_scale(calibrationFactor);
   
   pinMode(13, OUTPUT);
 
@@ -202,7 +231,11 @@ bool uploadDatetimeMillis() {
 
 bool crutchInUse() {
   // Todo add weight sensor measurements to detect when crutch is in use
-  return true;
+  pressure = scale.get_units(), 3;
+  if(pressure >= 5.0){
+    return true;
+  }
+  return false;
 }
 
 bool collectGaitSample() {
@@ -230,6 +263,7 @@ bool collectGaitSample() {
     int16_t gy=-(Buf[10]<<8 | Buf[11]);
     int16_t gz=Buf[12]<<8 | Buf[13];
 
+    // Append gyroscope and accelerometer data to the log
     appendLog.print(millis());
     appendLog.print(',');
     appendLog.print(micros());
@@ -245,6 +279,10 @@ bool collectGaitSample() {
     appendLog.print(gy);
     appendLog.print(',');
     appendLog.print(gz);
+    appendLog.print(',');
+
+    // Append load cell data to the log
+    appendLog.print(scale.get_units(), 3);
     appendLog.print('|');
   }
   appendLog.print("End_of_sample|");
